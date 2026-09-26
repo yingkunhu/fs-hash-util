@@ -2,9 +2,14 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -215,18 +220,27 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var pruned int64
+	folderCount, fErr := computeFolderHashes(database, root, scanID)
+	if fErr != nil {
+		fmt.Fprintf(os.Stderr, "folder hash error: %v\n", fErr)
+	}
+
+	var pruned, prunedFolders int64
 	if prune {
 		pruned, err = database.DeleteNotSeen(root, scanID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "prune error: %v\n", err)
 		}
+		prunedFolders, err = database.DeleteFoldersNotSeen(root, scanID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "prune folders error: %v\n", err)
+		}
 	}
 
 	fmt.Printf("Scan complete: root=%s  db=%s  scan_id=%d\n", root, dbPath, scanID)
-	fmt.Printf("  total=%d  hashed=%d  skipped=%d  errors=%d", totalFiles, hashed, skipped, errors)
+	fmt.Printf("  total=%d  hashed=%d  skipped=%d  errors=%d  folders=%d", totalFiles, hashed, skipped, errors, folderCount)
 	if prune {
-		fmt.Printf("  pruned=%d", pruned)
+		fmt.Printf("  pruned=%d  pruned_folders=%d", pruned, prunedFolders)
 	}
 	fmt.Println()
 
@@ -241,4 +255,96 @@ type scanResult struct {
 	hashJob *scanner.HashJob
 	hash    string
 	isErr   bool
+}
+
+// computeFolderHashes computes a content-only hash for every folder that contains at least
+// one file in the current scan. It runs after all file hashes are committed to the DB.
+//
+// Folder hash = SHA-256 of sorted direct-children content hashes (file + sub-folder hashes)
+// joined with '\n'. File names, attributes, and timestamps are excluded.
+//
+// Returns the number of folder records written.
+func computeFolderHashes(database *db.DB, scanRoot string, scanID int64) (int, error) {
+	files, err := database.ListByScanID(scanRoot, scanID)
+	if err != nil {
+		return 0, fmt.Errorf("list files for folder hashing: %w", err)
+	}
+	if len(files) == 0 {
+		return 0, nil
+	}
+
+	// children maps folder rel_path → direct children content hashes.
+	// Populated first with file hashes, then augmented with sub-folder hashes during bottom-up pass.
+	children := make(map[string][]string)
+	for _, f := range files {
+		parent := path.Dir(f.RelPath)
+		children[parent] = append(children[parent], f.Hash)
+		// ensure all ancestor folders exist in map
+		for cur := parent; cur != "."; {
+			p := path.Dir(cur)
+			if _, ok := children[p]; !ok {
+				children[p] = nil
+			}
+			cur = p
+		}
+	}
+
+	// sort folders deepest first for correct bottom-up computation
+	dirs := make([]string, 0, len(children))
+	for k := range children {
+		dirs = append(dirs, k)
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		di, dj := folderDepth(dirs[i]), folderDepth(dirs[j])
+		if di != dj {
+			return di > dj
+		}
+		return dirs[i] > dirs[j]
+	})
+
+	folderHashes := make(map[string]string, len(dirs))
+	for _, dir := range dirs {
+		sort.Strings(children[dir])
+		h := sha256.New()
+		for _, ch := range children[dir] {
+			h.Write([]byte(ch))
+			h.Write([]byte{'\n'})
+		}
+		fh := hex.EncodeToString(h.Sum(nil))
+		folderHashes[dir] = fh
+		// propagate this folder's hash to its parent's children list
+		if dir != "." {
+			p := path.Dir(dir)
+			children[p] = append(children[p], fh)
+		}
+	}
+
+	tx, err := database.Begin()
+	if err != nil {
+		return 0, err
+	}
+	for _, dir := range dirs {
+		if err := database.UpsertFolder(tx, db.FolderRecord{
+			ScanRoot: scanRoot,
+			RelPath:  dir,
+			Hash:     folderHashes[dir],
+			ScanID:   scanID,
+		}); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("upsert folder %q: %w", dir, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	return len(dirs), nil
+}
+
+// folderDepth returns the depth of a folder rel_path: 0 for ".", 1 for "a", 2 for "a/b", etc.
+func folderDepth(p string) int {
+	if p == "." {
+		return 0
+	}
+	return strings.Count(p, "/") + 1
 }

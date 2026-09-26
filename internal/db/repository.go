@@ -151,6 +151,64 @@ func (d *DB) DeleteNotSeen(scanRoot string, scanID int64) (int64, error) {
 	return res.RowsAffected()
 }
 
+// ListByScanID returns all file records for the given scanRoot whose scan_id equals scanID, ordered by rel_path.
+func (d *DB) ListByScanID(scanRoot string, scanID int64) ([]FileRecord, error) {
+	rows, err := d.Query(
+		`SELECT id, scan_root, file_name, rel_path, birth_ts, modified_ns, size, hash, scan_id
+		 FROM files WHERE scan_root=? AND scan_id=?
+		 ORDER BY rel_path`,
+		scanRoot, scanID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectFileRows(rows)
+}
+
+// UpsertFolder inserts or updates a FolderRecord.
+func (d *DB) UpsertFolder(tx *sql.Tx, rec FolderRecord) error {
+	_, err := tx.Exec(
+		`INSERT INTO folders(scan_root, rel_path, hash, scan_id)
+		 VALUES(?,?,?,?)
+		 ON CONFLICT(scan_root, rel_path) DO UPDATE SET
+		   hash=excluded.hash,
+		   scan_id=excluded.scan_id`,
+		rec.ScanRoot, rec.RelPath, rec.Hash, rec.ScanID,
+	)
+	return err
+}
+
+// GetFolderByRelPath fetches a folder record by (scanRoot, relPath).
+// Returns (record, true, nil) if found, (nil, false, nil) if not found.
+func (d *DB) GetFolderByRelPath(scanRoot, relPath string) (*FolderRecord, bool, error) {
+	row := d.QueryRow(
+		`SELECT id, scan_root, rel_path, hash, scan_id FROM folders WHERE scan_root=? AND rel_path=?`,
+		scanRoot, relPath,
+	)
+	var rec FolderRecord
+	err := row.Scan(&rec.ID, &rec.ScanRoot, &rec.RelPath, &rec.Hash, &rec.ScanID)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return &rec, true, nil
+}
+
+// DeleteFoldersNotSeen removes folder records whose scan_id is strictly less than scanID.
+func (d *DB) DeleteFoldersNotSeen(scanRoot string, scanID int64) (int64, error) {
+	res, err := d.Exec(
+		`DELETE FROM folders WHERE scan_root=? AND scan_id < ?`,
+		scanRoot, scanID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // Stats returns aggregate statistics.
 func (d *DB) Stats(scanRoot string) (total int64, totalSize int64, dupCount int64, err error) {
 	var base string

@@ -149,6 +149,75 @@ func TestDeleteNotSeen(t *testing.T) {
 	}
 }
 
+func TestUpsertFolderAndGet(t *testing.T) {
+	db := openTestDB(t)
+	scanID, _ := db.CreateScan("/root", 1)
+
+	tx, _ := db.Begin()
+	if err := db.UpsertFolder(tx, FolderRecord{
+		ScanRoot: "/root", RelPath: ".", Hash: "folderhash1", ScanID: scanID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, found, err := db.GetFolderByRelPath("/root", ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected folder record to be found")
+	}
+	if rec.Hash != "folderhash1" {
+		t.Fatalf("hash mismatch: %s", rec.Hash)
+	}
+
+	// upsert updates hash
+	scanID2, _ := db.CreateScan("/root", 2)
+	tx2, _ := db.Begin()
+	if err := db.UpsertFolder(tx2, FolderRecord{
+		ScanRoot: "/root", RelPath: ".", Hash: "folderhash2", ScanID: scanID2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tx2.Commit()
+
+	rec2, _, _ := db.GetFolderByRelPath("/root", ".")
+	if rec2.Hash != "folderhash2" {
+		t.Fatalf("expected updated hash folderhash2, got %s", rec2.Hash)
+	}
+}
+
+func TestDeleteFoldersNotSeen(t *testing.T) {
+	db := openTestDB(t)
+	scanID1, _ := db.CreateScan("/root", 1)
+	scanID2, _ := db.CreateScan("/root", 2)
+
+	tx, _ := db.Begin()
+	db.UpsertFolder(tx, FolderRecord{ScanRoot: "/root", RelPath: ".", Hash: "old", ScanID: scanID1})
+	db.UpsertFolder(tx, FolderRecord{ScanRoot: "/root", RelPath: "sub", Hash: "new", ScanID: scanID2})
+	tx.Commit()
+
+	n, err := db.DeleteFoldersNotSeen("/root", scanID2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 deleted, got %d", n)
+	}
+
+	_, found, _ := db.GetFolderByRelPath("/root", ".")
+	if found {
+		t.Fatal("root folder should have been pruned")
+	}
+	_, found, _ = db.GetFolderByRelPath("/root", "sub")
+	if !found {
+		t.Fatal("sub folder should still exist")
+	}
+}
+
 func TestGetByRelPath_notfound(t *testing.T) {
 	db := openTestDB(t)
 	_, found, err := db.GetByRelPath("/root", "missing.txt")

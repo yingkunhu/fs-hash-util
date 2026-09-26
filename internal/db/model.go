@@ -20,3 +20,14 @@ type ScanRecord struct {
 	StartedAt  int64
 	FinishedAt *int64 // NULL = in-progress or failed
 }
+
+// FolderRecord represents a row in the folders table.
+// Hash is the SHA-256 of sorted direct-children content hashes (file hashes + sub-folder hashes).
+// File names, attributes, and timestamps are excluded from the hash.
+type FolderRecord struct {
+	ID       int64
+	ScanRoot string
+	RelPath  string
+	Hash     string
+	ScanID   int64
+}

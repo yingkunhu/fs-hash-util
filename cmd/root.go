@@ -22,6 +22,7 @@ var rootCmd = &cobra.Command{
 
 func SetVersion(v string) {
 	version = v
+	rootCmd.Version = v
 }
 
 func Execute() {
@@ -35,5 +36,4 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&dbPath, "db", "fshash.db", "path to SQLite database file")
 	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "enable verbose output")
 	rootCmd.PersistentFlags().BoolVar(&jsonOut, "json", false, "output results as JSON")
-	rootCmd.Version = version
 }

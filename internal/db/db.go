@@ -34,6 +34,17 @@ CREATE INDEX IF NOT EXISTS idx_files_hash    ON files(hash);
 CREATE INDEX IF NOT EXISTS idx_files_relpath ON files(rel_path);
 CREATE INDEX IF NOT EXISTS idx_files_scan_id ON files(scan_id);
 
+CREATE TABLE IF NOT EXISTS folders (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_root   TEXT    NOT NULL,
+    rel_path    TEXT    NOT NULL,
+    hash        TEXT    NOT NULL,
+    scan_id     INTEGER NOT NULL REFERENCES scans(id),
+    UNIQUE(scan_root, rel_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_folders_scan_id ON folders(scan_id);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

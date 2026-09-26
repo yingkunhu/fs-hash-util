@@ -279,6 +279,139 @@ func TestStats(t *testing.T) {
 	}
 }
 
+func TestFolderHashBasic(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	makeTree(t, dir)
+	dbPath := filepath.Join(dir, "fshash.db")
+
+	if out, err := exec.Command(bin, "--db", dbPath, "scan", dir).CombinedOutput(); err != nil {
+		t.Fatalf("scan failed: %v\n%s", err, out)
+	}
+
+	// resolve symlinks to match what runScan stores as scan_root
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root = filepath.Clean(root)
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	// root folder "." must have a hash
+	rec, found, err := database.GetFolderByRelPath(root, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected root folder record in DB")
+	}
+	if rec.Hash == "" {
+		t.Fatal("root folder hash should not be empty")
+	}
+
+	// sub folder must also have a hash (makeTree creates sub/ with two files)
+	sub, found, err := database.GetFolderByRelPath(root, "sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected 'sub' folder record in DB")
+	}
+	if sub.Hash == "" {
+		t.Fatal("sub folder hash should not be empty")
+	}
+}
+
+func TestFolderHashChangesOnModify(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	makeTree(t, dir)
+	dbPath := filepath.Join(dir, "fshash.db")
+
+	if out, err := exec.Command(bin, "--db", dbPath, "scan", dir).CombinedOutput(); err != nil {
+		t.Fatalf("scan 1 failed: %v\n%s", err, out)
+	}
+
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root = filepath.Clean(root)
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	before, _, _ := database.GetFolderByRelPath(root, ".")
+	beforeSub, _, _ := database.GetFolderByRelPath(root, "sub")
+
+	// modify sub/b.txt — should change "sub" and "." folder hashes
+	bPath := filepath.Join(dir, "sub", "b.txt")
+	if err := os.WriteFile(bPath, []byte("modified sub content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Second)
+	if err := os.Chtimes(bPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, err := exec.Command(bin, "--db", dbPath, "scan", dir).CombinedOutput(); err != nil {
+		t.Fatalf("scan 2 failed: %v\n%s", err, out)
+	}
+
+	after, _, _ := database.GetFolderByRelPath(root, ".")
+	afterSub, _, _ := database.GetFolderByRelPath(root, "sub")
+
+	if before.Hash == after.Hash {
+		t.Error("root folder hash should change after modifying a file in sub/")
+	}
+	if beforeSub.Hash == afterSub.Hash {
+		t.Error("sub folder hash should change after modifying sub/b.txt")
+	}
+}
+
+func TestFolderHashStableOnRescan(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	makeTree(t, dir)
+	dbPath := filepath.Join(dir, "fshash.db")
+
+	if out, err := exec.Command(bin, "--db", dbPath, "scan", dir).CombinedOutput(); err != nil {
+		t.Fatalf("scan 1 failed: %v\n%s", err, out)
+	}
+
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root = filepath.Clean(root)
+
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	before, _, _ := database.GetFolderByRelPath(root, ".")
+
+	// rescan without any changes
+	if out, err := exec.Command(bin, "--db", dbPath, "scan", dir).CombinedOutput(); err != nil {
+		t.Fatalf("scan 2 failed: %v\n%s", err, out)
+	}
+
+	after, _, _ := database.GetFolderByRelPath(root, ".")
+	if before.Hash != after.Hash {
+		t.Errorf("folder hash should be stable on re-scan of unchanged tree: %s -> %s", before.Hash, after.Hash)
+	}
+}
+
 func recPaths(recs []db.FileRecord) []string {
 	var paths []string
 	for _, r := range recs {
