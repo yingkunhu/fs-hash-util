@@ -96,6 +96,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 		Database:    database,
 		ScanID:      scanID,
 		Concurrency: concurrency,
+		OnFolder: func(relPath string) {
+			fmt.Fprintf(os.Stderr, "  %s\n", relPath)
+		},
 	}
 
 	jobs, walkErrCh := scanner.Walk(ctx, root, opts)

@@ -35,6 +35,7 @@ type ScanOpts struct {
 	Database    *db.DB
 	ScanID      int64
 	Concurrency int
+	OnFolder    func(relPath string) // called when a non-root directory is entered; nil = no-op
 }
 
 // Walk traverses root and sends Jobs to the returned channel.
@@ -86,6 +87,9 @@ func Walk(ctx context.Context, root string, opts ScanOpts) (<-chan Job, <-chan e
 			}
 
 			if d.IsDir() {
+				if opts.OnFolder != nil && relSlash != "." {
+					opts.OnFolder(relSlash)
+				}
 				return nil // descend
 			}
 
