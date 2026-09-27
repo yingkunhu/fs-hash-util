@@ -128,14 +128,18 @@ func buildFileDupes(database *db.DB, root string, minSize int64) (dupeReport, er
 	report.Groups = []dupeGroup{}
 	for _, hash := range order {
 		g := groups[hash]
+		paths := dedupSamePaths(g.paths)
+		if len(paths) < 2 {
+			continue
+		}
 		report.Groups = append(report.Groups, dupeGroup{
 			Hash:  hash,
 			Size:  g.size,
-			Count: len(g.paths),
-			Paths: g.paths,
+			Count: len(paths),
+			Paths: paths,
 		})
-		report.Summary.TotalItems += len(g.paths)
-		report.Summary.WastedBytes += int64(len(g.paths)-1) * g.size
+		report.Summary.TotalItems += len(paths)
+		report.Summary.WastedBytes += int64(len(paths)-1) * g.size
 	}
 	report.Summary.Groups = len(report.Groups)
 	return report, nil
@@ -181,6 +185,10 @@ func buildFolderDupes(database *db.DB, root string, minSize int64) (dupeReport, 
 		for _, fk := range g.folders {
 			paths = append(paths, filepath.Join(fk.scanRoot, fk.relPath))
 		}
+		paths = dedupSamePaths(paths)
+		if len(paths) < 2 {
+			continue
+		}
 		valid = append(valid, sizedGroup{hash: hash, size: size, paths: paths})
 	}
 
@@ -200,6 +208,36 @@ func buildFolderDupes(database *db.DB, root string, minSize int64) (dupeReport, 
 	}
 	report.Summary.Groups = len(report.Groups)
 	return report, nil
+}
+
+// dedupSamePaths removes paths that point to the same physical filesystem entry
+// (identical device+inode). Paths that cannot be stat'd are kept as-is.
+// This handles case-insensitive filesystems where the same directory may be
+// stored under different-cased paths in the database.
+func dedupSamePaths(paths []string) []string {
+	var (
+		seen []os.FileInfo
+		out  []string
+	)
+	for _, p := range paths {
+		fi, err := os.Stat(p)
+		if err != nil {
+			out = append(out, p)
+			continue
+		}
+		same := false
+		for _, prev := range seen {
+			if os.SameFile(prev, fi) {
+				same = true
+				break
+			}
+		}
+		if !same {
+			seen = append(seen, fi)
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func writePlainDupes(w io.Writer, r dupeReport) error {
