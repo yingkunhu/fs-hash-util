@@ -8,10 +8,11 @@ import (
 )
 
 var (
-	dbPath  string
-	verbose bool
-	jsonOut bool
-	version string
+	dbPath           string
+	verbose          bool
+	jsonOut          bool
+	version          string
+	skipUpgradeCheck bool
 )
 
 var rootCmd = &cobra.Command{
@@ -36,4 +37,11 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&dbPath, "db", "fshash.db", "path to SQLite database file")
 	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "enable verbose output")
 	rootCmd.PersistentFlags().BoolVar(&jsonOut, "json", false, "output results as JSON")
+	rootCmd.PersistentFlags().BoolVar(&skipUpgradeCheck, "skip-upgrade-check", false, "skip the new-version check on startup")
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if !skipUpgradeCheck {
+			checkAndOfferUpgrade()
+		}
+		return nil
+	}
 }

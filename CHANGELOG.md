@@ -20,6 +20,16 @@
 
 ---
 
+## [1.1.0] — 2026-09-27
+
+### Added
+
+- **自动升级检查** — 每次启动时向 GitHub Releases API 查询最新版本（5 s 超时），若有新版本则提示用户是否升级。确认后：下载当前 OS/arch 对应的二进制 → 备份现有文件（`.bak`）→ 以 `fshash` 命名安装到同目录 → 运行 `fshash --version` 验证 → 删除备份。验证失败时自动从备份还原。
+- **`--skip-upgrade-check` 全局 flag** — 跳过启动时的版本检查，适用于脚本/CI 场景。
+- **GitHub Actions release workflow** — 手动触发（`workflow_dispatch`），从 `main.go` 读取版本号，构建三平台静态二进制，生成 `checksums.txt`，创建 GitHub Release。
+
+---
+
 ## [1.0.0] — 2026-09-27
 
 ### Added

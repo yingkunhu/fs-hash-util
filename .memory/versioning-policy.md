@@ -5,7 +5,7 @@ metadata:
   type: feedback
 ---
 
-版本号存储在 `main.go` 的 `var version` 常量（当前 `1.0.0`）。`CHANGELOG.md` 是完整历史记录。三段式语义化版本 `MAJOR.MINOR.PATCH`，**每次有效改动后都要主动 bump `main.go` 的 version 并在 `CHANGELOG.md` 追加条目**，无需用户提醒。
+版本号存储在 `main.go` 的 `var version` 常量（当前 `1.1.0`）。`CHANGELOG.md` 是完整历史记录。三段式语义化版本 `MAJOR.MINOR.PATCH`，**每次有效改动后都要主动 bump `main.go` 的 version 并在 `CHANGELOG.md` 追加条目**，无需用户提醒。
 
 - **PATCH** (`0.1.0 → 0.1.1`) — 小修：bug fix、文档订正、默认排除规则微调、依赖 patch 升级等**不改变外部行为契约**的改动。这是默认档。
 - **MINOR** (`0.1.0 → 0.2.0`) — 大修：功能新增或行为变更（新增子命令、新增输出字段、扫描逻辑扩展、数据库 schema 向后兼容新增），仍向后兼容。
