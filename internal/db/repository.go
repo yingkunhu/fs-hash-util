@@ -233,6 +233,102 @@ func (d *DB) Stats(scanRoot string) (total int64, totalSize int64, dupCount int6
 	return
 }
 
+// DuplicateFiles returns all file records that share a hash with at least one other record,
+// where the individual file size >= minSize. Records are ordered by size desc, then hash, then path.
+// If scanRoot is non-empty only records within that root are included.
+func (d *DB) DuplicateFiles(scanRoot string, minSize int64) ([]FileRecord, error) {
+	var (
+		q    string
+		args []any
+	)
+	if scanRoot == "" {
+		q = `SELECT id, scan_root, file_name, rel_path, birth_ts, modified_ns, size, hash, scan_id
+		     FROM files
+		     WHERE hash IN (
+		         SELECT hash FROM files WHERE size >= ?
+		         GROUP BY hash HAVING COUNT(*) > 1
+		     )
+		     ORDER BY size DESC, hash, scan_root, rel_path`
+		args = []any{minSize}
+	} else {
+		q = `SELECT id, scan_root, file_name, rel_path, birth_ts, modified_ns, size, hash, scan_id
+		     FROM files
+		     WHERE scan_root = ?
+		     AND hash IN (
+		         SELECT hash FROM files WHERE size >= ? AND scan_root = ?
+		         GROUP BY hash HAVING COUNT(*) > 1
+		     )
+		     ORDER BY size DESC, hash, rel_path`
+		args = []any{scanRoot, minSize, scanRoot}
+	}
+	rows, err := d.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectFileRows(rows)
+}
+
+// DuplicateFolders returns all folder records that share a hash with at least one other record.
+// Records are ordered by hash, then scan_root, then rel_path.
+// If scanRoot is non-empty only folders within that root are included.
+func (d *DB) DuplicateFolders(scanRoot string) ([]FolderRecord, error) {
+	var (
+		q    string
+		args []any
+	)
+	if scanRoot == "" {
+		q = `SELECT id, scan_root, rel_path, hash, scan_id
+		     FROM folders
+		     WHERE hash IN (
+		         SELECT hash FROM folders GROUP BY hash HAVING COUNT(*) > 1
+		     )
+		     ORDER BY hash, scan_root, rel_path`
+	} else {
+		q = `SELECT id, scan_root, rel_path, hash, scan_id
+		     FROM folders
+		     WHERE scan_root = ?
+		     AND hash IN (
+		         SELECT hash FROM folders WHERE scan_root = ?
+		         GROUP BY hash HAVING COUNT(*) > 1
+		     )
+		     ORDER BY hash, rel_path`
+		args = []any{scanRoot, scanRoot}
+	}
+	rows, err := d.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FolderRecord
+	for rows.Next() {
+		var rec FolderRecord
+		if err := rows.Scan(&rec.ID, &rec.ScanRoot, &rec.RelPath, &rec.Hash, &rec.ScanID); err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+// FolderSize returns the total size of all files recursively under the given folder.
+func (d *DB) FolderSize(scanRoot, relPath string) (int64, error) {
+	var total int64
+	var err error
+	if relPath == "." {
+		err = d.QueryRow(
+			`SELECT COALESCE(SUM(size),0) FROM files WHERE scan_root=?`,
+			scanRoot,
+		).Scan(&total)
+	} else {
+		err = d.QueryRow(
+			`SELECT COALESCE(SUM(size),0) FROM files WHERE scan_root=? AND (rel_path=? OR rel_path LIKE ?)`,
+			scanRoot, relPath, relPath+"/%",
+		).Scan(&total)
+	}
+	return total, err
+}
+
 // --- helpers ---
 
 func scanFileRow(row *sql.Row) (*FileRecord, error) {

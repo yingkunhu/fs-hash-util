@@ -20,6 +20,21 @@
 
 ---
 
+## [1.4.0] — 2026-09-27
+
+### Added
+
+- **`fshash dupes` 命令** — 生成重复文件或文件夹报告：
+  - `--level files|folders`（默认 `files`）：文件级或文件夹级重复检测
+  - `--min-size <value>`：只报告大小 ≥ 阈值的重复项，支持 `1024`、`1K`、`10M`、`2G`、`1.5TB` 等格式
+  - `--root <dir>`：限定扫描根目录过滤范围
+  - `--output <file>`：将报告写入文件（省略则输出到 stdout）
+  - 全局 `--json` 标志：输出 JSON 格式（含 hash、size、count、paths、summary）；默认纯文本格式
+  - 文件夹重复的 `size` 字段为该文件夹下所有文件的递归总大小
+- DB 层新增 `DuplicateFiles`、`DuplicateFolders`、`FolderSize` 三个查询方法
+
+---
+
 ## [1.3.0] — 2026-09-27
 
 ### Added
