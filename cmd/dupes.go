@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -160,8 +161,12 @@ func buildFolderDupes(database *db.DB, root string, minSize int64) (dupeReport, 
 		groups[r.Hash].folders = append(groups[r.Hash].folders, folderKey{r.ScanRoot, r.RelPath})
 	}
 
-	var report dupeReport
-	report.Groups = []dupeGroup{}
+	type sizedGroup struct {
+		hash  string
+		size  int64
+		paths []string
+	}
+	var valid []sizedGroup
 	for _, hash := range order {
 		g := groups[hash]
 		// All folders in the group have identical content, so compute size from the first entry.
@@ -174,17 +179,24 @@ func buildFolderDupes(database *db.DB, root string, minSize int64) (dupeReport, 
 		}
 		var paths []string
 		for _, fk := range g.folders {
-			p := filepath.Join(fk.scanRoot, fk.relPath)
-			paths = append(paths, p)
+			paths = append(paths, filepath.Join(fk.scanRoot, fk.relPath))
 		}
+		valid = append(valid, sizedGroup{hash: hash, size: size, paths: paths})
+	}
+
+	sort.Slice(valid, func(i, j int) bool { return valid[i].size > valid[j].size })
+
+	var report dupeReport
+	report.Groups = []dupeGroup{}
+	for _, sg := range valid {
 		report.Groups = append(report.Groups, dupeGroup{
-			Hash:  hash,
-			Size:  size,
-			Count: len(paths),
-			Paths: paths,
+			Hash:  sg.hash,
+			Size:  sg.size,
+			Count: len(sg.paths),
+			Paths: sg.paths,
 		})
-		report.Summary.TotalItems += len(paths)
-		report.Summary.WastedBytes += int64(len(paths)-1) * size
+		report.Summary.TotalItems += len(sg.paths)
+		report.Summary.WastedBytes += int64(len(sg.paths)-1) * sg.size
 	}
 	report.Summary.Groups = len(report.Groups)
 	return report, nil
