@@ -145,6 +145,12 @@ func buildFileDupes(database *db.DB, root string, minSize int64) (dupeReport, er
 	return report, nil
 }
 
+type sizedGroup struct {
+	hash  string
+	size  int64
+	paths []string
+}
+
 func buildFolderDupes(database *db.DB, root string, minSize int64) (dupeReport, error) {
 	records, err := database.DuplicateFolders(root)
 	if err != nil {
@@ -165,11 +171,6 @@ func buildFolderDupes(database *db.DB, root string, minSize int64) (dupeReport, 
 		groups[r.Hash].folders = append(groups[r.Hash].folders, folderKey{r.ScanRoot, r.RelPath})
 	}
 
-	type sizedGroup struct {
-		hash  string
-		size  int64
-		paths []string
-	}
 	var valid []sizedGroup
 	for _, hash := range order {
 		g := groups[hash]
@@ -194,6 +195,8 @@ func buildFolderDupes(database *db.DB, root string, minSize int64) (dupeReport, 
 
 	sort.Slice(valid, func(i, j int) bool { return valid[i].size > valid[j].size })
 
+	valid = suppressNestedGroups(valid)
+
 	var report dupeReport
 	report.Groups = []dupeGroup{}
 	for _, sg := range valid {
@@ -208,6 +211,66 @@ func buildFolderDupes(database *db.DB, root string, minSize int64) (dupeReport, 
 	}
 	report.Summary.Groups = len(report.Groups)
 	return report, nil
+}
+
+// suppressNestedGroups drops any folder-duplicate group whose every path is a
+// strict descendant of the corresponding path in a single larger group. When two
+// folders are reported as duplicates as a whole, their internal sub-folders are
+// necessarily duplicated too; those nested groups are redundant noise, so only the
+// top-most (ancestor) groups are kept.
+//
+// A group G is suppressed iff there exists a kept group A such that every path in
+// G is a strict descendant of some path in A. groups must be sorted largest-first
+// so ancestors (larger size) are considered before their descendants.
+func suppressNestedGroups(groups []sizedGroup) []sizedGroup {
+	kept := make([]sizedGroup, 0, len(groups))
+	for _, g := range groups {
+		covered := false
+		for _, a := range kept {
+			if groupCovers(a.paths, g.paths) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			kept = append(kept, g)
+		}
+	}
+	return kept
+}
+
+// groupCovers reports whether every path in child is a strict descendant of some
+// path in parent.
+func groupCovers(parent, child []string) bool {
+	for _, c := range child {
+		found := false
+		for _, p := range parent {
+			if isStrictDescendant(c, p) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// isStrictDescendant reports whether child is nested strictly below ancestor,
+// comparing on path-separator boundaries so "/a/foo" is not treated as a
+// descendant of "/a/fo".
+func isStrictDescendant(child, ancestor string) bool {
+	c := filepath.Clean(child)
+	a := filepath.Clean(ancestor)
+	if c == a {
+		return false
+	}
+	prefix := a
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	return strings.HasPrefix(c, prefix)
 }
 
 // dedupSamePaths removes paths that point to the same physical filesystem entry
