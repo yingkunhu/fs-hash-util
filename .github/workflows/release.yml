@@ -54,7 +54,7 @@ jobs:
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ steps.ver.outputs.tag }}
-          prerelease: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.prerelease == 'true' }}
+          prerelease: ${{ github.event_name == 'push' || github.event.inputs.prerelease == 'true' }}
           generate_release_notes: true
           files: |
             dist/fshash-darwin-arm64
