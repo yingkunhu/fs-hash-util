@@ -2,7 +2,7 @@ package main
 
 import "github.com/yhu/fs-hash-util/cmd"
 
-var version = "1.5.0"
+var version = "1.7.0"
 
 func main() {
 	cmd.SetVersion(version)

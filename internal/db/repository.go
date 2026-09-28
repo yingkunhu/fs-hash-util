@@ -329,6 +329,188 @@ func (d *DB) FolderSize(scanRoot, relPath string) (int64, error) {
 	return total, err
 }
 
+// FilesUnderPrefix returns all file records under the given rel_path prefix,
+// ordered by rel_path. If prefix is ".", all files in the scan root are returned.
+func (d *DB) FilesUnderPrefix(scanRoot, prefix string) ([]FileRecord, error) {
+	var rows *sql.Rows
+	var err error
+	if prefix == "." {
+		rows, err = d.Query(
+			`SELECT id, scan_root, file_name, rel_path, birth_ts, modified_ns, size, hash, scan_id
+			 FROM files WHERE scan_root=? ORDER BY rel_path`,
+			scanRoot,
+		)
+	} else {
+		rows, err = d.Query(
+			`SELECT id, scan_root, file_name, rel_path, birth_ts, modified_ns, size, hash, scan_id
+			 FROM files WHERE scan_root=? AND rel_path LIKE ? || '/%' ORDER BY rel_path`,
+			scanRoot, prefix,
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectFileRows(rows)
+}
+
+// FoldersUnderPrefix returns all folder records under the given rel_path prefix
+// (excluding "." itself), ordered by rel_path.
+func (d *DB) FoldersUnderPrefix(scanRoot, prefix string) ([]FolderRecord, error) {
+	var rows *sql.Rows
+	var err error
+	if prefix == "." {
+		rows, err = d.Query(
+			`SELECT id, scan_root, rel_path, hash, scan_id
+			 FROM folders WHERE scan_root=? AND rel_path != '.' ORDER BY rel_path`,
+			scanRoot,
+		)
+	} else {
+		rows, err = d.Query(
+			`SELECT id, scan_root, rel_path, hash, scan_id
+			 FROM folders WHERE scan_root=? AND rel_path LIKE ? || '/%' ORDER BY rel_path`,
+			scanRoot, prefix,
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FolderRecord
+	for rows.Next() {
+		var rec FolderRecord
+		if err := rows.Scan(&rec.ID, &rec.ScanRoot, &rec.RelPath, &rec.Hash, &rec.ScanID); err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+
+func (d *DB) AllScanRoots() ([]string, error) {
+	rows, err := d.Query(
+		`SELECT DISTINCT scan_root FROM files
+		 UNION SELECT DISTINCT scan_root FROM folders
+		 ORDER BY scan_root`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var r string
+		if err := rows.Scan(&r); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// MoveFile updates the single file record at (srcScanRoot, srcRelPath) to the new
+// location (dstScanRoot, dstRelPath, dstFileName). Hashes are not recalculated.
+// Returns the number of rows updated (0 if not found).
+func (d *DB) MoveFile(srcScanRoot, srcRelPath, dstScanRoot, dstRelPath, dstFileName string) (int64, error) {
+	res, err := d.Exec(
+		`UPDATE files SET scan_root=?, rel_path=?, file_name=? WHERE scan_root=? AND rel_path=?`,
+		dstScanRoot, dstRelPath, dstFileName, srcScanRoot, srcRelPath,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// MoveFileTx is like MoveFile but operates within an existing transaction.
+// Use for batch updates where many files are moved in one transaction.
+func (d *DB) MoveFileTx(tx *sql.Tx, srcScanRoot, srcRelPath, dstScanRoot, dstRelPath, dstFileName string) (int64, error) {
+	res, err := tx.Exec(
+		`UPDATE files SET scan_root=?, rel_path=?, file_name=? WHERE scan_root=? AND rel_path=?`,
+		dstScanRoot, dstRelPath, dstFileName, srcScanRoot, srcRelPath,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// MoveFolder updates all file and folder records at or under (srcScanRoot, srcRelPath)
+// to reflect the new location (dstScanRoot, dstRelPath). Hashes are not recalculated.
+//
+// The SUBSTR trick: SUBSTR(rel_path, len(srcRelPath)+1) strips the old prefix and the
+// slash that follows it, giving the suffix to append to dstRelPath.
+//
+//	"old/a/b.txt" → SUBSTR(rel_path, len("old/a")+1) = "/b.txt" → "new/x" || "/b.txt"
+//	"old/a"       → SUBSTR("old/a", 6) = ""                      → "new/x"
+func (d *DB) MoveFolder(srcScanRoot, srcRelPath, dstScanRoot, dstRelPath string) (filesUpdated, foldersUpdated int64, err error) {
+	prefixEnd := len(srcRelPath) + 1
+
+	tx, txErr := d.Begin()
+	if txErr != nil {
+		return 0, 0, txErr
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	res, sqlErr := tx.Exec(
+		`UPDATE files SET scan_root=?, rel_path=? || SUBSTR(rel_path, ?)
+		 WHERE scan_root=? AND rel_path LIKE ? || '/%'`,
+		dstScanRoot, dstRelPath, prefixEnd, srcScanRoot, srcRelPath,
+	)
+	if sqlErr != nil {
+		return 0, 0, sqlErr
+	}
+	filesUpdated, _ = res.RowsAffected()
+
+	res, sqlErr = tx.Exec(
+		`UPDATE folders SET scan_root=?, rel_path=? || SUBSTR(rel_path, ?)
+		 WHERE scan_root=? AND (rel_path=? OR rel_path LIKE ? || '/%')`,
+		dstScanRoot, dstRelPath, prefixEnd, srcScanRoot, srcRelPath, srcRelPath,
+	)
+	if sqlErr != nil {
+		return 0, 0, sqlErr
+	}
+	foldersUpdated, _ = res.RowsAffected()
+
+	return filesUpdated, foldersUpdated, tx.Commit()
+}
+
+// RenameScanRoot updates scan_root in files, folders, and scans tables from
+// oldScanRoot to newScanRoot. Relative paths are unchanged.
+// Use this when the entire scanned root directory is moved to a new location.
+func (d *DB) RenameScanRoot(oldScanRoot, newScanRoot string) (filesUpdated, foldersUpdated int64, err error) {
+	tx, txErr := d.Begin()
+	if txErr != nil {
+		return 0, 0, txErr
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	res, sqlErr := tx.Exec(`UPDATE files SET scan_root=? WHERE scan_root=?`, newScanRoot, oldScanRoot)
+	if sqlErr != nil {
+		return 0, 0, sqlErr
+	}
+	filesUpdated, _ = res.RowsAffected()
+
+	res, sqlErr = tx.Exec(`UPDATE folders SET scan_root=? WHERE scan_root=?`, newScanRoot, oldScanRoot)
+	if sqlErr != nil {
+		return 0, 0, sqlErr
+	}
+	foldersUpdated, _ = res.RowsAffected()
+
+	_, _ = tx.Exec(`UPDATE scans SET scan_root=? WHERE scan_root=?`, newScanRoot, oldScanRoot)
+
+	return filesUpdated, foldersUpdated, tx.Commit()
+}
+
 // --- helpers ---
 
 func scanFileRow(row *sql.Row) (*FileRecord, error) {

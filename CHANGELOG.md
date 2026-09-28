@@ -18,6 +18,29 @@
 
 （暂无未发布变更）
 
+## [1.7.0] - 2026-09-29
+
+### Changed
+
+- `list` 命令全面重写，输出格式改为 `ls -lR` 风格（去掉权限、用户、组字段）：
+  - 支持可选路径参数：`fshash list /path/to/dir`；若为文件路径则显示该文件信息。
+  - 支持 glob 模式：`fshash list /path/abc*`、`fshash list /docs/*.pdf`。
+  - `--max-depth N`（默认 0，仅显示直接子条目；-1 为无限递归）。
+  - `--limit N`（默认 0，即无限制；设置后每个目录最多显示 N 条）。
+  - 无参数时列出所有 scan root 的根级内容。
+  - 文件夹条目自动计算递归总大小和最新修改时间。
+  - 若 `folders` 表为空（旧版 DB），自动从文件路径推断目录结构（向后兼容）。
+  - 移除旧的 `--root` / `--offset` flag；`--limit` 语义变更（默认由 50 改为 0=无限制）。
+
+## [1.6.0] - 2026-09-29
+
+### Added
+
+- `move <src> <dst>` 子命令：将文件或文件夹移动到新位置，并同步更新 DB 中的 `scan_root`、`rel_path`、`file_name` 字段，**不重新计算 hash**。
+  - 若 `<dst>` 是已存在目录，`<src>` 移入其中（与 `mv` 行为一致）。
+  - 移动整个 scan root 目录时，自动更新 `files`、`folders`、`scans` 三张表的 `scan_root` 列，rel_path 保持不变。
+  - `--db-only` flag：跳过文件系统操作，仅更新 DB（用于已手动移动文件后的场景）。
+
 ## [1.5.0] - 2026-09-28
 
 ### Changed
