@@ -276,51 +276,7 @@ func computeFolderHashes(database *db.DB, scanRoot string, scanID int64) (int, e
 		return 0, nil
 	}
 
-	// children maps folder rel_path → direct children content hashes.
-	// Populated first with file hashes, then augmented with sub-folder hashes during bottom-up pass.
-	children := make(map[string][]string)
-	for _, f := range files {
-		parent := path.Dir(f.RelPath)
-		children[parent] = append(children[parent], f.Hash)
-		// ensure all ancestor folders exist in map
-		for cur := parent; cur != "."; {
-			p := path.Dir(cur)
-			if _, ok := children[p]; !ok {
-				children[p] = nil
-			}
-			cur = p
-		}
-	}
-
-	// sort folders deepest first for correct bottom-up computation
-	dirs := make([]string, 0, len(children))
-	for k := range children {
-		dirs = append(dirs, k)
-	}
-	sort.Slice(dirs, func(i, j int) bool {
-		di, dj := folderDepth(dirs[i]), folderDepth(dirs[j])
-		if di != dj {
-			return di > dj
-		}
-		return dirs[i] > dirs[j]
-	})
-
-	folderHashes := make(map[string]string, len(dirs))
-	for _, dir := range dirs {
-		sort.Strings(children[dir])
-		h := sha256.New()
-		for _, ch := range children[dir] {
-			h.Write([]byte(ch))
-			h.Write([]byte{'\n'})
-		}
-		fh := hex.EncodeToString(h.Sum(nil))
-		folderHashes[dir] = fh
-		// propagate this folder's hash to its parent's children list
-		if dir != "." {
-			p := path.Dir(dir)
-			children[p] = append(children[p], fh)
-		}
-	}
+	dirs, folderHashes := aggregateFolderHashes(files)
 
 	tx, err := database.Begin()
 	if err != nil {
@@ -342,6 +298,64 @@ func computeFolderHashes(database *db.DB, scanRoot string, scanID int64) (int, e
 		return 0, err
 	}
 	return len(dirs), nil
+}
+
+// aggregateFolderHashes computes a content-only hash for every folder implied by the
+// given file records. A folder's hash is the SHA-256 of its direct children's content
+// hashes (files + sub-folders), each sorted and joined with '\n'.
+//
+// Only folders that (transitively) contain at least one file appear in the result — an
+// empty folder yields no entry, matching a fresh scan. Returns the folder rel_paths
+// ordered deepest-first and a map rel_path → hash.
+//
+// This is the single source of truth for folder hashing, shared by `scan` and `move`.
+func aggregateFolderHashes(files []db.FileRecord) (dirs []string, folderHashes map[string]string) {
+	// children maps folder rel_path → direct children content hashes.
+	// Populated first with file hashes, then augmented with sub-folder hashes during bottom-up pass.
+	children := make(map[string][]string)
+	for _, f := range files {
+		parent := path.Dir(f.RelPath)
+		children[parent] = append(children[parent], f.Hash)
+		// ensure all ancestor folders exist in map
+		for cur := parent; cur != "."; {
+			p := path.Dir(cur)
+			if _, ok := children[p]; !ok {
+				children[p] = nil
+			}
+			cur = p
+		}
+	}
+
+	// sort folders deepest first for correct bottom-up computation
+	dirs = make([]string, 0, len(children))
+	for k := range children {
+		dirs = append(dirs, k)
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		di, dj := folderDepth(dirs[i]), folderDepth(dirs[j])
+		if di != dj {
+			return di > dj
+		}
+		return dirs[i] > dirs[j]
+	})
+
+	folderHashes = make(map[string]string, len(dirs))
+	for _, dir := range dirs {
+		sort.Strings(children[dir])
+		h := sha256.New()
+		for _, ch := range children[dir] {
+			h.Write([]byte(ch))
+			h.Write([]byte{'\n'})
+		}
+		fh := hex.EncodeToString(h.Sum(nil))
+		folderHashes[dir] = fh
+		// propagate this folder's hash to its parent's children list
+		if dir != "." {
+			p := path.Dir(dir)
+			children[p] = append(children[p], fh)
+		}
+	}
+	return dirs, folderHashes
 }
 
 // folderDepth returns the depth of a folder rel_path: 0 for ".", 1 for "a", 2 for "a/b", etc.

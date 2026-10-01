@@ -7,6 +7,9 @@ import (
 
 // DefaultExcludes is the list of built-in regex patterns applied to slash-normalized relative paths.
 // Any path matching at least one pattern is excluded. Directories matching a pattern are pruned (subtree skipped).
+//
+// NOTE: the move command treats the *directory* entries here as atomic units (see
+// atomicDirNames in cmd/move.go). Keep the two lists in sync when adding directory excludes.
 var DefaultExcludes = []string{
 	`(^|/)\.git(/|$)`,
 	`(^|/)node_modules(/|$)`,
